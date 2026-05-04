@@ -463,6 +463,9 @@ export default function HomePage() {
     const userMessage = inputText.trim();
     setInputText("");
 
+    // 保存当前状态，因为 setGameState 是异步的
+    const currentState = { ...gameState };
+
     // 添加用户消息
     setGameState((prev) => ({
       ...prev,
@@ -476,18 +479,19 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "chat",
-          difficulty: gameState.difficulty,
-          scenarioId: gameState.scenario?.id,
-          conversationHistory: gameState.messages,
+          difficulty: currentState.difficulty,
+          scenarioId: currentState.scenario?.id,
+          conversationHistory: currentState.messages,
           userMessage,
-          currentAnger: gameState.currentAnger,
-          currentRound: gameState.currentRound,
-          userMessages: gameState.userMessages,
-          angerChanges: gameState.angerChanges,
+          currentAnger: currentState.currentAnger,
+          currentRound: currentState.currentRound,
+          userMessages: currentState.userMessages,
+          angerChanges: currentState.angerChanges,
         }),
       });
 
       const data = await response.json();
+      console.log(`[Frontend] API response - currentAnger: ${data.currentAnger}, angerChange: ${data.angerChange}`);
 
       // 生成语音
       let audioUrl = "";

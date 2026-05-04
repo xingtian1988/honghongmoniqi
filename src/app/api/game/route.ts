@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { LLMClient, Config, HeaderUtils, Message } from "coze-coding-dev-sdk";
+import { getDefaultProvider, ChatMessage } from "@/lib/ai";
 
 // 预设场景数据
 const SCENARIOS = {
@@ -43,145 +43,98 @@ const SCENARIOS = {
 
 const ROUND_LIMITS = { easy: 8, medium: 10, hard: 12 };
 
-// 模拟 AI 回复（当外部 API 不可用时使用）
-const SIMULATED_REPLIES = {
-  start: [
-    "哼，你还知道来哄我？",
-    "算你还有点良心，知道来找我了",
-    "你今天是不是忘了什么重要的事情？",
-    "我等了你一天的消息，你现在才来？",
-    "你知道我有多生气吗？",
-  ],
-  chat: {
-    positive: [
-      "好吧...看你态度还不错",
-      "哼，这次就勉强原谅你",
-      "算你会说话",
-      "好吧，我心情稍微好一点了",
-      "嗯...那我就不跟你计较了",
-    ],
-    neutral: [
-      "哦，是吗",
-      "随便你怎么说",
-      "我不想听这些",
-      "你总是有理由",
-      "好吧，我知道了",
-    ],
-    negative: [
-      "你就是在敷衍我！",
-      "越说越生气！",
-      "你根本就不在乎我！",
-      "不想跟你说话了",
-      "你太让我失望了",
-    ],
-  },
-};
-
-function getRandomReply(replies: string[]): string {
-  return replies[Math.floor(Math.random() * replies.length)];
-}
-
 // 分析用户输入，计算好感度变化
 function analyzeUserMessage(userMessage: string): number {
   const lowerMessage = userMessage.toLowerCase();
   
-  // 非常有效的正向关键词
   const veryEffective = [
     "对不起", "抱歉", "我错了", "是我的错", "真的知道错了",
     "我爱你", "爱你", "宝贝", "老婆", "亲爱的", "心肝",
     "我会改", "一定改", "发誓", "保证", "承诺",
     "弥补", "补偿", "带你去", "陪你", "给你买",
     "想你", "好想你", "好爱好爱", "最喜欢你",
+    "不好意思", "抱歉啦", "原谅我", "求原谅", "别生气",
+    "抱抱", "亲亲", "么么", "爱你哦", "喜欢你",
   ];
   
-  // 有效的中性/部分正向关键词
   const somewhatEffective = [
     "理解", "明白", "我知道", "我懂", "你说得对",
     "心疼", "难受", "内疚", "自责", "难过",
     "以后", "以后会", "下次", "下次一定",
     "解释一下", "听我解释", "其实", "但是",
+    "不是故意的", "没办法", "迫不得已", "身不由己",
+    "忙", "加班", "工作", "领导",
   ];
   
-  // 无效/负向关键词
   const ineffective = [
     "你想太多", "你想多了", "至于吗", "别生气了",
     "我没错", "不是我的错", "你怎么又", "你每次都",
     "讲道理", "说清楚", "道理", "逻辑",
     "随便", "无所谓", "都行", "你决定",
+    "忘了", "不记得", "忘记了",
   ];
   
-  // 非常无效的关键词（会让情况更糟）
   const veryIneffective = [
     "分手", "离婚", "不过了", "滚", "烦",
     "你有病", "神经病", "脑子", "智障",
+    "无语", "懒得说", "随便你", "爱咋咋地",
   ];
   
   let change = 0;
   
-  // 检查是否有非常无效的关键词
   for (const keyword of veryIneffective) {
     if (lowerMessage.includes(keyword)) {
-      return 25; // 大幅增加愤怒
+      return 25;
     }
   }
   
-  // 检查是否有非常有效的关键词
   for (const keyword of veryEffective) {
     if (lowerMessage.includes(keyword)) {
       change -= 15;
     }
   }
   
-  // 检查是否有部分有效的关键词
   for (const keyword of somewhatEffective) {
     if (lowerMessage.includes(keyword)) {
       change -= 8;
     }
   }
   
-  // 检查是否有无效关键词
   for (const keyword of ineffective) {
     if (lowerMessage.includes(keyword)) {
       change += 10;
     }
   }
   
-  // 如果没有任何有效/无效关键词，根据消息长度微调
   if (change === 0) {
     if (userMessage.length > 20) {
-      change = -3; // 较长的认真回复，稍微减少愤怒
+      change = -3;
     } else if (userMessage.length < 5) {
-      change = 5; // 敷衍的短回复，稍微增加愤怒
+      change = 5;
     }
   }
   
-  // 限制变化范围在 -20 到 +20 之间
   return Math.max(-20, Math.min(20, change));
 }
 
 // 获取情绪反应
 function getEmotionReaction(angerChange: number, currentAnger: number): string {
   if (angerChange <= -10) {
-    // 好感增加很多
     if (currentAnger <= 30) return "语气软了下来";
     if (currentAnger <= 60) return "稍微哼了一声，但没那么凶了";
     return "稍微安静了一会儿...";
   } else if (angerChange <= -3) {
-    // 好感增加
     if (currentAnger <= 30) return "偷偷笑了一下";
     if (currentAnger <= 60) return "哼了一声，但愿意听了";
     return "没有说话，沉默了几秒";
   } else if (angerChange <= 3) {
-    // 变化不大
     if (currentAnger <= 30) return "有点无奈地叹了口气";
     if (currentAnger <= 60) return "翻了个白眼";
     return "冷笑了一声";
   } else if (angerChange <= 10) {
-    // 好感减少
     if (currentAnger <= 60) return "更生气了...";
     return "更冷淡了";
   } else {
-    // 好感大幅减少
     if (currentAnger >= 80) return "准备拉黑你...";
     return "突然不说话了";
   }
@@ -196,13 +149,11 @@ function generateReview(userMessages: string[], angerChanges: number[]): {
   const mistakes: string[] = [];
   const correctActions: string[] = [];
   
-  // 分析每条用户消息
   userMessages.forEach((msg, index) => {
     const lowerMsg = msg.toLowerCase();
     const change = angerChanges[index];
     
     if (change > 10) {
-      // 踩雷了
       if (lowerMsg.includes("你想太多") || lowerMsg.includes("你想多了")) {
         mistakes.push(`第${index + 1}句："否定她的感受" - 说"你想太多"会让她觉得不被理解`);
       }
@@ -227,7 +178,6 @@ function generateReview(userMessages: string[], angerChanges: number[]): {
     }
     
     if (change < -5) {
-      // 做对了
       if (lowerMsg.includes("对不起") || lowerMsg.includes("抱歉") || lowerMsg.includes("我错了")) {
         correctActions.push(`第${index + 1}句："真诚道歉" - 直接承认错误是最有效的`);
       }
@@ -249,11 +199,9 @@ function generateReview(userMessages: string[], angerChanges: number[]): {
     }
   });
   
-  // 去重
   const uniqueMistakes = [...new Set(mistakes)];
   const uniqueCorrect = [...new Set(correctActions)];
   
-  // 生成总结
   let summary = "";
   if (uniqueMistakes.length === 0 && uniqueCorrect.length === 0) {
     summary = "这轮回复比较中性，没有明显的加分或减分";
@@ -281,7 +229,7 @@ function getAngerDescription(anger: number): string {
   return "完全被哄好了";
 }
 
-// 构建系统提示词（不包含内部评估要求）
+// 构建系统提示词
 function buildSystemPrompt(scenario: typeof SCENARIOS.easy[0], difficulty: string, currentAnger: number, round: number) {
   return `你是"哄哄模拟器"中的AI角色，正在扮演一个正在生气的女朋友。
 
@@ -334,28 +282,20 @@ export async function POST(request: NextRequest) {
       }
 
       const systemPrompt = buildSystemPrompt(scenario, difficulty, scenario.initialAnger, 1);
-      const messages: Message[] = [
+      const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         { role: "user", content: "开始吧，请先说一句话表达你的生气" },
       ];
 
       let aiResponse = "";
       try {
-        const config = new Config();
-        const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-        const client = new LLMClient(config, customHeaders);
-
-        for await (const chunk of client.stream(messages, { temperature: 0.8 })) {
-          if (chunk.content) {
-            aiResponse += chunk.content.toString();
-          }
-        }
-        // 清理回复，移除任何括号内容
-        aiResponse = aiResponse.replace(/[（(][^）)]*[）)]/g, "").trim();
+        const provider = getDefaultProvider();
+        const result = await provider.chat(messages, { temperature: 0.8 });
+        aiResponse = result.content.replace(/[（(][^）)]*[）)]/g, "").trim();
+        console.log(`[AI] Response from provider: ${provider.name}, latency: ${result.latency}ms`);
       } catch (error) {
-        console.error("LLM API Error:", error);
-        // 使用模拟回复
-        aiResponse = getRandomReply(SIMULATED_REPLIES.start);
+        console.error("[AI] Provider Error:", error);
+        throw error;
       }
 
       return NextResponse.json({
@@ -379,6 +319,7 @@ export async function POST(request: NextRequest) {
 
       // 分析用户输入，计算好感度变化
       const angerChange = analyzeUserMessage(userMessage);
+      console.log(`[Game API] User message: "${userMessage}", Anger change: ${angerChange}, Current anger: ${currentAnger}`);
       
       // 获取情绪反应
       const emotionReaction = getEmotionReaction(angerChange, currentAnger);
@@ -390,39 +331,27 @@ export async function POST(request: NextRequest) {
         .join("\n");
 
       const systemPrompt = buildSystemPrompt(scenario, difficulty, currentAnger + angerChange, currentRound + 1);
-      const messages: Message[] = [
+      const messages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         { role: "user", content: `之前的对话：\n${dialogueHistory}\n\n她说："${userMessage}"\n\n现在轮到你回复了` },
       ];
 
       let aiResponse = "";
       try {
-        const config = new Config();
-        const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-        const client = new LLMClient(config, customHeaders);
-
-        for await (const chunk of client.stream(messages, { temperature: 0.8 })) {
-          if (chunk.content) {
-            aiResponse += chunk.content.toString();
-          }
-        }
-        // 清理回复
-        aiResponse = aiResponse.replace(/[（(][^）)]*[）)]/g, "").trim();
+        const provider = getDefaultProvider();
+        const result = await provider.chat(messages, { temperature: 0.8 });
+        aiResponse = result.content.replace(/[（(][^）)]*[）)]/g, "").trim();
+        console.log(`[AI] Response from provider: ${provider.name}, latency: ${result.latency}ms`);
       } catch (error) {
-        console.error("LLM API Error:", error);
-        // 根据好感度变化选择模拟回复
-        if (angerChange < -5) {
-          aiResponse = getRandomReply(SIMULATED_REPLIES.chat.positive);
-        } else if (angerChange > 5) {
-          aiResponse = getRandomReply(SIMULATED_REPLIES.chat.negative);
-        } else {
-          aiResponse = getRandomReply(SIMULATED_REPLIES.chat.neutral);
-        }
+        console.error("[AI] Provider Error:", error);
+        throw error;
       }
       
       const newAnger = Math.max(0, Math.min(100, currentAnger + angerChange));
       const nextRound = currentRound + 1;
       const maxRounds = ROUND_LIMITS[difficulty as keyof typeof ROUND_LIMITS];
+      
+      console.log(`[Game API] New anger: ${newAnger}, Next round: ${nextRound}`);
 
       // 判断游戏是否结束
       let gameOver = false;
@@ -465,7 +394,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: "无效的操作" }, { status: 400 });
   } catch (error) {
-    console.error("LLM API Error:", error);
+    console.error("[Game API] Error:", error);
     return NextResponse.json({ error: "服务器错误" }, { status: 500 });
   }
 }
